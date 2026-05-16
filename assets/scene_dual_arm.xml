@@ -2,10 +2,8 @@
   <include file="mjx_hand_over.xml"/>
 
   <visual>
-    <headlight diffuse="0.2 0.2 0.2" ambient="0.1 0.1 0.1" specular="0 0 0"/>
-    <rgba haze="0.15 0.25 0.35 1"/>
+    <headlight diffuse="0 0 0.2" ambient="0 0 0" specular="0 0 0"/>
     <global azimuth="90" elevation="-20"/>
-    <quality shadowsize="8192"/>
   </visual>
 
   <worldbody>
