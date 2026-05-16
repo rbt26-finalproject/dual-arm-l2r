@@ -1,9 +1,9 @@
 """
-Reach demo for the Aloha dual-arm environment from MuJoCo Playground.
+Reach demo with box teleporting between table A and table B at random positions.
 
-Both arms sweep their full waist range while held in an extended pose,
-tracing out the maximum horizontal reach envelope of each arm.
-Close the viewer window to exit.
+Both arms sweep their full horizontal reach while the red box teleports
+every few seconds between the left (A) and right (B) side tables,
+landing at a random position on whichever table it moves to.
 
 Setup (one-time, run from repo root):
     mkdir aloha_menagerie && cd aloha_menagerie
@@ -38,75 +38,107 @@ if not MENAGERIE_PATH.exists():
 mjx_env.MENAGERIE_PATH = epath.Path(str(MENAGERIE_PATH))
 importlib.reload(aloha_base)
 
+SCENE_XML = Path(__file__).parent / "assets" / "scene_dual_arm.xml"
 
-def load_model():
-    assets  = aloha_base.get_assets()
-    xml_str = (Path(__file__).parent / "assets" / "scene_dual_arm.xml").read_text()
-    return mujoco.MjModel.from_xml_string(xml_str, assets)
+BOX_QPOS_ADR = 16  # freejoint starts at qpos index 16
 
+# Table A (left) and table B (right) center x positions
+TABLE_A_X = -0.96
+TABLE_B_X =  0.96
 
-# Arm fully extended horizontally: shoulder pitched down, elbow straightened.
-# This gives ~1.27m reach radius — the maximum horizontal envelope.
+# Box sits at z=0.035 on the side tables (surface at z=0.005, box half-height=0.03)
+BOX_Z = 0.035
+
+# Random y range within table depth (table half-size y=0.37, keep box away from edges)
+BOX_Y_RANGE = (-0.25, 0.25)
+
+# Random x offset within table half-size (0.35), keep away from edges
+BOX_X_OFFSET_RANGE = (-0.20, 0.20)
+
+# How often the box teleports (seconds)
+TELEPORT_INTERVAL = 3.0
+
+# Arm sweep settings
 SHOULDER_EXTENDED = -1.8
 ELBOW_EXTENDED    = -1.36
 GRIPPER_OPEN      =  0.037
-
-# Waist sweeps its full joint range ±3.14 rad so the extended arm traces a full arc.
-WAIST_MIN = -3.14
-WAIST_MAX =  3.14
-SWEEP_FREQ = 0.08  # Hz, one full sweep every ~12 seconds
+SWEEP_FREQ        =  0.08
 
 ACT_L = slice(0, 7)
 ACT_R = slice(7, 14)
 
 
+def load_model():
+    assets  = aloha_base.get_assets()
+    xml_str = SCENE_XML.read_text()
+    return mujoco.MjModel.from_xml_string(xml_str, assets)
+
+
 def extended_ctrl(waist):
-    """Returns ctrl for one arm at given waist angle, arm fully extended."""
     return np.array([waist, SHOULDER_EXTENDED, ELBOW_EXTENDED, 0.0, 0.0, 0.0, GRIPPER_OPEN])
+
+
+def teleport_box(data, rng, current_table):
+    next_table = "B" if current_table == "A" else "A"
+    center_x   = TABLE_A_X if next_table == "A" else TABLE_B_X
+    x = center_x + rng.uniform(*BOX_X_OFFSET_RANGE)
+    y = rng.uniform(*BOX_Y_RANGE)
+    data.qpos[BOX_QPOS_ADR    ] = x
+    data.qpos[BOX_QPOS_ADR + 1] = y
+    data.qpos[BOX_QPOS_ADR + 2] = BOX_Z
+    data.qpos[BOX_QPOS_ADR + 3] = 1  # quaternion w
+    data.qpos[BOX_QPOS_ADR + 4] = 0
+    data.qpos[BOX_QPOS_ADR + 5] = 0
+    data.qpos[BOX_QPOS_ADR + 6] = 0
+    # zero out box velocity so it doesn't carry momentum from previous position
+    data.qvel[BOX_QPOS_ADR - 1: BOX_QPOS_ADR + 5] = 0
+    print(f"Box -> table {next_table}  ({x:.3f}, {y:.3f}, {BOX_Z})")
+    return next_table
 
 
 def main():
     model = load_model()
     data  = mujoco.MjData(model)
+    rng   = np.random.default_rng(seed=42)
 
     mujoco.mj_resetDataKeyframe(model, data, 0)
+
+    # Start box on table A
+    current_table = "A"
+    data.qpos[BOX_QPOS_ADR    ] = TABLE_A_X + rng.uniform(*BOX_X_OFFSET_RANGE)
+    data.qpos[BOX_QPOS_ADR + 1] = rng.uniform(*BOX_Y_RANGE)
+    data.qpos[BOX_QPOS_ADR + 2] = BOX_Z
+    data.qpos[BOX_QPOS_ADR + 3] = 1
+    data.qpos[BOX_QPOS_ADR + 4] = 0
+    data.qpos[BOX_QPOS_ADR + 5] = 0
+    data.qpos[BOX_QPOS_ADR + 6] = 0
     mujoco.mj_forward(model, data)
 
-    site_l = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "left/gripper")
-    site_r = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "right/gripper")
-
-    print("Viewer open. Close the window to exit.")
-    print("Both arms sweeping full horizontal reach (~1.27m radius).")
+    print("Viewer open. Box teleports every 3 seconds between table A and table B.")
+    print("Close the window to exit.")
 
     with mujoco.viewer.launch_passive(model, data,
                                       show_left_ui=False,
                                       show_right_ui=False) as viewer:
-        t    = 0.0
-        step = 0
+        t             = 0.0
+        last_teleport = 0.0
+
         while viewer.is_running():
             step_start = time.perf_counter()
 
-            # Waist oscillates over full range; arms stay extended
-            waist_mid   = (WAIST_MAX + WAIST_MIN) / 2
-            waist_amp   = (WAIST_MAX - WAIST_MIN) / 2
-            waist_l     = waist_mid + waist_amp * np.sin(2 * np.pi * SWEEP_FREQ * t)
-            waist_r     = waist_mid + waist_amp * np.sin(2 * np.pi * SWEEP_FREQ * t + np.pi)  # opposite phase
+            waist_l = np.pi * np.sin(2 * np.pi * SWEEP_FREQ * t)
+            waist_r = np.pi * np.sin(2 * np.pi * SWEEP_FREQ * t + np.pi)
 
             data.ctrl[ACT_L] = extended_ctrl(waist_l)
             data.ctrl[ACT_R] = extended_ctrl(waist_r)
 
             mujoco.mj_step(model, data)
-            t    += model.opt.timestep
-            step += 1
+            t += model.opt.timestep
 
-            if step % 400 == 0:
-                ee_l = data.site_xpos[site_l]
-                ee_r = data.site_xpos[site_r]
-                r_l  = np.sqrt(ee_l[0]**2 + ee_l[1]**2)
-                r_r  = np.sqrt(ee_r[0]**2 + ee_r[1]**2)
-                print(f"t={t:.1f}s  "
-                      f"Left  EE: ({ee_l[0]:.3f}, {ee_l[1]:.3f}, {ee_l[2]:.3f})  r={r_l:.3f}m  |  "
-                      f"Right EE: ({ee_r[0]:.3f}, {ee_r[1]:.3f}, {ee_r[2]:.3f})  r={r_r:.3f}m")
+            if t - last_teleport >= TELEPORT_INTERVAL:
+                current_table = teleport_box(data, rng, current_table)
+                mujoco.mj_forward(model, data)
+                last_teleport = t
 
             viewer.sync()
 
