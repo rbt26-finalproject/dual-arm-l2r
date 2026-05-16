@@ -1,0 +1,44 @@
+<mujoco model="dual_arm_scene">
+  <include file="mjx_hand_over.xml"/>
+
+  <visual>
+    <headlight diffuse="0.2 0.2 0.2" ambient="0.1 0.1 0.1" specular="0 0 0"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <global azimuth="90" elevation="-20"/>
+    <quality shadowsize="8192"/>
+  </visual>
+
+  <worldbody>
+    <!-- Left side table, only reachable by the left arm -->
+    <body name="table_a" pos="-0.96 0 -0.12">
+      <geom name="table_a_top"  type="box" size="0.35 0.37 0.025"
+            pos="0 0 0.1" rgba="0.75 0.65 0.5 1"/>
+      <geom name="table_a_col"  type="box" size="0.35 0.37 0.1"
+            pos="0 0 0.0008" contype="1" conaffinity="1"/>
+      <geom name="table_a_leg1" type="cylinder" size="0.025 0.35"
+            pos="-0.30  0.32 -0.275" rgba="0.4 0.4 0.4 1"/>
+      <geom name="table_a_leg2" type="cylinder" size="0.025 0.35"
+            pos="-0.30 -0.32 -0.275" rgba="0.4 0.4 0.4 1"/>
+      <geom name="table_a_leg3" type="cylinder" size="0.025 0.35"
+            pos=" 0.30  0.32 -0.275" rgba="0.4 0.4 0.4 1"/>
+      <geom name="table_a_leg4" type="cylinder" size="0.025 0.35"
+            pos=" 0.30 -0.32 -0.275" rgba="0.4 0.4 0.4 1"/>
+    </body>
+
+    <!-- Right side table, only reachable by the right arm -->
+    <body name="table_b" pos="0.96 0 -0.12">
+      <geom name="table_b_top"  type="box" size="0.35 0.37 0.025"
+            pos="0 0 0.1" rgba="0.75 0.65 0.5 1"/>
+      <geom name="table_b_col"  type="box" size="0.35 0.37 0.1"
+            pos="0 0 0.0008" contype="1" conaffinity="1"/>
+      <geom name="table_b_leg1" type="cylinder" size="0.025 0.35"
+            pos="-0.30  0.32 -0.275" rgba="0.4 0.4 0.4 1"/>
+      <geom name="table_b_leg2" type="cylinder" size="0.025 0.35"
+            pos="-0.30 -0.32 -0.275" rgba="0.4 0.4 0.4 1"/>
+      <geom name="table_b_leg3" type="cylinder" size="0.025 0.35"
+            pos=" 0.30  0.32 -0.275" rgba="0.4 0.4 0.4 1"/>
+      <geom name="table_b_leg4" type="cylinder" size="0.025 0.35"
+            pos=" 0.30 -0.32 -0.275" rgba="0.4 0.4 0.4 1"/>
+    </body>
+  </worldbody>
+</mujoco>

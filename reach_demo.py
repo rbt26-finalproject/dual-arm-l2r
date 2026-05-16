@@ -41,7 +41,7 @@ importlib.reload(aloha_base)
 
 def load_model():
     assets  = aloha_base.get_assets()
-    xml_str = epath.Path((consts.XML_PATH / "mjx_hand_over.xml").as_posix()).read_text()
+    xml_str = (Path(__file__).parent / "assets" / "scene_dual_arm.xml").read_text()
     return mujoco.MjModel.from_xml_string(xml_str, assets)
 
 
