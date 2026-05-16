@@ -192,7 +192,7 @@ Yang dikerjakan/dipersiapkan:
 
 Target implementasi awal:
 
-- [ ] Scene MuJoCo Playground berjalan dan robot Aloha terlihat di viewer.
+- [x] Scene MuJoCo Playground berjalan dan robot Aloha terlihat di viewer.
 - [ ] Split-zone workspace terdefinisi dan obstacle ditempatkan di scene.
 - [ ] Motion descriptor rule-based menghasilkan task decomposition.
 - [ ] Reward function fase 1 (Arm A: obstacle clearance) dibuat.
