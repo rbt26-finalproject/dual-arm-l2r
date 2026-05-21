@@ -5,19 +5,15 @@ mujoco>=3.1.1
 mujoco-mjx>=3.1.1          # MJX JAX backend, ships alongside mujoco
 
 # MuJoCo Playground
-# Install from PyPI for quick start:
-#   pip install playground
-# Or from source for latest fixes (recommended):
-#   git clone https://github.com/google-deepmind/mujoco_playground
-#   pip install -e ".[all]"
+# Install from PyPI: pip install playground
+# Or from source: git clone https://github.com/google-deepmind/mujoco_playground && pip install -e ".[all]"
 playground
 
-# JAX (GPU)
 jax[cuda12]
 
 # Numerics
 numpy>=1.24
-scipy>=1.10                # convex hull for handoff zone resolver
+scipy>=1.10                # IK solver (scipy.optimize.minimize) and convex hull for handoff resolver
 
 # Config
 pyyaml>=6.0                # configs/default.yaml parsing
@@ -25,3 +21,6 @@ pyyaml>=6.0                # configs/default.yaml parsing
 # Visualisation
 matplotlib>=3.7
 mediapy>=1.1               # video saving from MuJoCo renders
+
+# LLM (Motion Descriptor and Reward Coder)
+google-genai>=1.0 
