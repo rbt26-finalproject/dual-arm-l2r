@@ -7,16 +7,17 @@ to Rewards (Yu et al., 2023). Falls back to a rule-based parser when
 GEMINI_API_KEY is not set or the API call fails.
 
 Usage:
-    export GEMINI_API_KEY=api_key_here
+    export GEMINI_API_KEY=your_key_here
     python src/motion_descriptor.py
 """
 
 import os
 import re
-import time 
 import json
 from dataclasses import dataclass, field
 from typing import Optional
+from google import genai
+from google.genai import types
 
 
 @dataclass
@@ -95,10 +96,8 @@ Rules:
 def _call_gemini(task_str):
     """Calls Gemini API and returns parsed TaskDecomposition or None on failure."""
     try:
-        from google import genai
-        from google.genai import types
-
         api_key = os.environ.get("GEMINI_API_KEY")
+
         if not api_key:
             return None
 
@@ -111,6 +110,7 @@ def _call_gemini(task_str):
                 temperature=0.0,
             ),
         )
+
         raw = response.text.strip()
 
         # Strip markdown fences if the model added them despite instructions
@@ -185,8 +185,8 @@ def _rule_based_parse(task_str):
     object_name   = _extract_object(text)
     obstacle_name = _extract_obstacle(text) if any(k in text for k in _OBSTACLE_ACTIONS) else None
 
-    from_match = re.search(r"from (.+?) to (.+?)(?:\s|$)", text)
-    on_match   = re.search(r"on (.+?) (?:and )?(?:place )?(?:on|to) (.+?)(?:\s|$)", text)
+    from_match = re.search(r"from (.+?) to (.+?)$", text)
+    on_match   = re.search(r"on (.+?) (?:and )?(?:place )?(?:on|to) (.+?)$", text)
 
     start_zone = goal_zone = None
     if from_match:
@@ -209,9 +209,16 @@ def _rule_based_parse(task_str):
         else:
             start_zone, goal_zone = "A", "B"
 
-    start_arm = "A" if start_zone == "A" else "B"
-    goal_arm  = "A" if goal_zone  == "A" else "B"
-    handoff   = start_arm != goal_arm
+    _zone_to_arm = {"A": "A", "B": "B", "center": None}
+    start_arm = _zone_to_arm.get(start_zone, "A")
+    goal_arm  = _zone_to_arm.get(goal_zone,  "B")
+
+    if start_arm is None:
+        start_arm = "B" if goal_arm == "A" else "A"
+    if goal_arm is None:
+        goal_arm  = "B" if start_arm == "A" else "A"
+
+    handoff = start_arm != goal_arm
 
     phases   = []
     phase_id = 1
@@ -268,6 +275,8 @@ def parse_task(task_str):
 
 
 if __name__ == "__main__":
+    import time
+
     examples = [
         "move the box from table A to table B",
         "pick up the eraser that is behind the cup on the left table and place it on the right table",
@@ -278,5 +287,5 @@ if __name__ == "__main__":
         print("=" * 60)
         print(parse_task(task).describe())
         if i < len(examples) - 1:
-            time.sleep(5)  # stay within free tier RPM limit
+            time.sleep(2)  # To not trigger TooManyReuqests.
     print("=" * 60)
