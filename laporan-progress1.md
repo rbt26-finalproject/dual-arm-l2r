@@ -216,7 +216,7 @@ Target implementasi awal:
 
 Target:
 
-- [ ] Handoff zone resolver menghasilkan zona handoff dinamis.
+- [X] Handoff zone resolver menghasilkan zona handoff dinamis.
 - [ ] Reward function fase 2 dan fase 3 (handoff + Arm B goal placement) berjalan end-to-end.
 - [ ] Training per-arm reward di MuJoCo Playground berjalan.
 - [ ] Reward log dan trajectory plot tersedia.
