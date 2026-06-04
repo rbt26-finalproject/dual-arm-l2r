@@ -1,14 +1,17 @@
 """
-Motion descriptor for the dual-arm task.
+motion_descriptor.py
 
-Calls Gemini to parse a natural language task string into a structured
-TaskDecomposition, following the Motion Descriptor concept from Language
-to Rewards (Yu et al., 2023). Falls back to a rule-based parser when
-GEMINI_API_KEY is not set or the API call fails.
+Two-stage task parser following Language to Rewards (Yu et al., 2023).
 
-Usage:
-    export GEMINI_API_KEY=your_key_here
-    python src/motion_descriptor.py
+Stage 1 (Motion Descriptor): Gemini converts a natural language task string
+into a structured motion plan using a constrained template. This separates
+task understanding from reward coding.
+
+Stage 2 (Task Decomposition): The structured plan is parsed into a
+TaskDecomposition with ordered Phase objects consumed by the runner.
+
+Falls back to rule-based parsing when GEMINI_API_KEY is not set or the
+API call fails.
 """
 
 import os
@@ -38,7 +41,7 @@ class TaskDecomposition:
     goal_zone: str
     handoff_required: bool
     phases: list = field(default_factory=list)
-    source: str = "unknown"  # "gemini" or "rule_based"
+    source: str = "unknown"
 
     def describe(self):
         lines = [
@@ -57,17 +60,78 @@ class TaskDecomposition:
         return "\n".join(lines)
 
 
-GEMINI_SYSTEM_PROMPT = """
-You are a robot task planner for a dual-arm manipulation system.
+# -------------------------
+# STAGE 1: MOTION DESCRIPTOR
+# -------------------------
 
-The scene has:
-- Arm A: left arm, can only reach table A (left side table) and the center table.
-- Arm B: right arm, can only reach table B (right side table) and the center table.
-- Center table: reachable by both arms, used as handoff zone.
-- table A: left side, only Arm A can reach it.
-- table B: right side, only Arm B can reach it.
+MOTION_DESCRIPTOR_SYSTEM_PROMPT = """
+You are a motion planner for a dual-arm robot manipulation system.
 
-Given a task string, output ONLY a JSON object with this exact structure:
+The scene contains: box, obstacle (optional).
+The arms are:
+  Arm A (left):  can reach table_A and center table only.
+  Arm B (right): can reach table_B and center table only.
+  Center table:  reachable by both arms, used as handoff zone.
+
+Given a task, output a structured motion plan using ONLY this template:
+
+[start of plan]
+Object to manipulate: {CHOICE: box}
+Start location: {CHOICE: table_A, table_B, center}
+Goal location: {CHOICE: table_A, table_B, center}
+Handoff required: {CHOICE: yes, no}
+[optional] Obstacle to clear: {CHOICE: obstacle}
+[optional] Arm A clears obstacle before reaching object.
+Arm {CHOICE: A, B} reaches the object.
+Arm {CHOICE: A, B} grasps the object.
+[optional] Arm {CHOICE: A, B} places the object at center for handoff.
+[optional] Arm {CHOICE: A, B} reaches the handoff zone.
+[optional] Arm {CHOICE: A, B} grasps the object from handoff zone.
+Arm {CHOICE: A, B} places the object at goal location.
+[end of plan]
+
+Rules:
+1. Replace {CHOICE: ...} with exactly one of the listed options.
+2. Only include [optional] lines when necessary.
+3. If object starts at table_A and goal is table_B (or vice versa), handoff is required.
+4. Output ONLY the plan between [start of plan] and [end of plan], no explanation.
+"""
+
+
+def _call_motion_descriptor(task_str):
+    """Stage 1: converts natural language task to structured motion plan string."""
+    try:
+        api_key = os.environ.get("GEMINI_API_KEY")
+        if not api_key:
+            return None
+
+        client   = genai.Client(api_key=api_key)
+        response = client.models.generate_content(
+            model="gemini-3.1-flash-lite",
+            contents=task_str,
+            config=types.GenerateContentConfig(
+                system_instruction=MOTION_DESCRIPTOR_SYSTEM_PROMPT,
+                temperature=0.0,
+            ),
+        )
+
+        text = response.text.strip()
+        print(f"[motion_descriptor] Plan:\n{text}\n")
+        return text
+
+    except Exception as e:
+        print(f"[motion_descriptor] Stage 1 failed: {e}")
+        return None
+
+
+# -------------------------
+# STAGE 2: PLAN -> STRUCTURED DECOMPOSITION
+# -------------------------
+
+DECOMPOSER_SYSTEM_PROMPT = """
+You are a task decomposer for a dual-arm robot.
+
+Given a structured motion plan, output ONLY a JSON object:
 {
   "object_name": "string",
   "obstacle_name": "string or null",
@@ -79,43 +143,36 @@ Given a task string, output ONLY a JSON object with this exact structure:
       "phase_id": 1,
       "arm": "A or B",
       "action": "clear_obstacle or reach or grasp or place",
-      "target": "object name or zone name",
-      "depends_on": null or phase_id integer
+      "target": "box or obstacle or handoff_zone or A or B or center or above_box",
+      "depends_on": null or integer
     }
   ]
 }
 
-Rules:
-- If object starts on table A and goal is on table B, handoff is required.
-- Handoff is placed at center table, picked up by Arm B.
-- If there is an obstacle, Arm A must clear it before reaching the object.
-- Output ONLY the JSON, no explanation, no markdown fences.
+Map plan lines to phases strictly in order. No explanation. No markdown fences.
 """
 
 
-def _call_gemini(task_str):
-    """Calls Gemini API and returns parsed TaskDecomposition or None on failure."""
+def _call_decomposer(plan_text):
+    """Stage 2: converts structured plan text to JSON task decomposition."""
     try:
         api_key = os.environ.get("GEMINI_API_KEY")
-
         if not api_key:
             return None
 
         client   = genai.Client(api_key=api_key)
         response = client.models.generate_content(
             model="gemini-3.1-flash-lite",
-            contents=task_str,
+            contents=plan_text,
             config=types.GenerateContentConfig(
-                system_instruction=GEMINI_SYSTEM_PROMPT,
+                system_instruction=DECOMPOSER_SYSTEM_PROMPT,
                 temperature=0.0,
             ),
         )
 
         raw = response.text.strip()
-
-        # Strip markdown fences if the model added them despite instructions
         raw = re.sub(r"^```json\s*", "", raw)
-        raw = re.sub(r"\s*```$", "", raw)
+        raw = re.sub(r"\s*```$",     "", raw)
 
         data = json.loads(raw)
 
@@ -131,7 +188,7 @@ def _call_gemini(task_str):
         ]
 
         return TaskDecomposition(
-            task_str=task_str,
+            task_str="",
             object_name=data["object_name"],
             obstacle_name=data.get("obstacle_name"),
             start_zone=data["start_zone"],
@@ -142,11 +199,13 @@ def _call_gemini(task_str):
         )
 
     except Exception as e:
-        print(f"[motion_descriptor] Gemini call failed: {e}. Falling back to rule-based.")
+        print(f"[motion_descriptor] Stage 2 failed: {e}")
         return None
 
 
-# Rule-based fallback
+# -------------------------
+# RULE-BASED FALLBACK
+# -------------------------
 
 _ZONE_KEYWORDS = {
     "table a": "A", "left table": "A", "left side": "A",
@@ -218,8 +277,7 @@ def _rule_based_parse(task_str):
     if goal_arm is None:
         goal_arm  = "B" if start_arm == "A" else "A"
 
-    handoff = start_arm != goal_arm
-
+    handoff  = start_arm != goal_arm
     phases   = []
     phase_id = 1
 
@@ -263,14 +321,28 @@ def _rule_based_parse(task_str):
     )
 
 
+# -------------------------
+# PUBLIC ENTRY POINT
+# -------------------------
+
 def parse_task(task_str):
     """
     Parses a natural language task string into a TaskDecomposition.
-    Uses Gemini if GEMINI_API_KEY is set, otherwise falls back to rule-based.
+
+    Follows the two-stage pipeline from Language to Rewards (Yu et al., 2023):
+      Stage 1: Motion Descriptor — LLM produces a constrained plan template.
+      Stage 2: Decomposer — LLM converts plan to structured JSON phases.
+
+    Falls back to rule-based parsing if either stage fails.
     """
-    result = _call_gemini(task_str)
-    if result is not None:
-        return result
+    plan_text = _call_motion_descriptor(task_str)
+    if plan_text:
+        result = _call_decomposer(plan_text)
+        if result is not None:
+            result.task_str = task_str
+            return result
+
+    print("[motion_descriptor] Falling back to rule-based parser.")
     return _rule_based_parse(task_str)
 
 
@@ -287,5 +359,5 @@ if __name__ == "__main__":
         print("=" * 60)
         print(parse_task(task).describe())
         if i < len(examples) - 1:
-            time.sleep(2)  # To not trigger TooManyReuqests.
+            time.sleep(2)
     print("=" * 60)
