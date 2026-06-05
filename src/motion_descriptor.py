@@ -84,9 +84,9 @@ Handoff required: {CHOICE: yes, no}
 [optional] Arm A clears obstacle before reaching object.
 Arm {CHOICE: A, B} reaches the object.
 Arm {CHOICE: A, B} grasps the object.
-[optional] Arm {CHOICE: A, B} places the object at center for handoff.
-[optional] Arm {CHOICE: A, B} reaches the handoff zone.
-[optional] Arm {CHOICE: A, B} grasps the object from handoff zone.
+[optional] Arm {CHOICE: A, B} places the object at center.
+[optional] Arm {CHOICE: A, B} reaches the object.
+[optional] Arm {CHOICE: A, B} grasps the object.
 Arm {CHOICE: A, B} places the object at goal location.
 [end of plan]
 

@@ -39,4 +39,9 @@
             pos=" 0.30 -0.32 -0.275" rgba="0.4 0.4 0.4 1"/>
     </body>
   </worldbody>
+
+  <equality>
+    <weld name="weld_left"  body1="left/gripper_link"  body2="box" relpose="0.13 0 -0.003 1 0 0 0" active="false"/>
+    <weld name="weld_right" body1="right/gripper_link" body2="box" relpose="0.13 0 -0.003 1 0 0 0" active="false"/>
+  </equality>
 </mujoco>

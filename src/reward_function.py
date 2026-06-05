@@ -29,10 +29,6 @@ GRIP_OPEN   = 0.037
 GRIP_CLOSED = 0.0
 
 
-# -------------------------
-# PROMPTS
-# -------------------------
-
 REWARD_SYSTEM_PROMPT = """
 You are a reward function coder for a dual-arm robot manipulation system.
 
@@ -44,22 +40,23 @@ Available API:
 set_ee_target(target, z_offset=0.0)
   Sets the EE position target for reward and is_done.
   target must be one of: "box", "handoff_zone", "goal_zone"
-  z_offset: additional height above the target center in meters (default 0.0).
-  For reach/grasp to box: use z_offset=0.0.
+  z_offset is ignored for "box" targets — the system uses a fixed scene offset.
   For handoff/goal: use z_offset=0.05 to clear the table surface.
   For Arm A place phases: always use "handoff_zone", never "goal_zone".
   For Arm B place phases: use "goal_zone".
 
 set_done_threshold(distance)
-  Sets the distance threshold in meters for is_done(). Default is 0.10.
+  Sets the distance threshold in meters for is_done(). Default is 0.06.
+  Use 0.06 for reach and grasp phases.
+  Use 0.08 for place phases.
 
 set_alignment_weight(weight)
-  Sets how much approach axis alignment is weighted in reward and is_done.
-  0.0 = position only, 1.0 = full alignment penalty. Default is 0.5.
+  Weights alignment in the reward signal to guide approach direction.
+  Default is 0.3. Used for reward shaping only — never blocks is_done.
 
 set_alignment_threshold(min_alignment)
-  Sets minimum alignment dot product required for is_done(). Range -1.0 to 1.0.
-  Default is 0.5. Set to -1.0 to disable alignment check.
+  Minimum alignment for is_done(). Default is -1.0 (disabled).
+  Do NOT set above -1.0 for reach or grasp — position alone determines completion.
 
 set_gripper(state)
   state must be one of: "open", "closed", "open_when_done"
@@ -70,8 +67,8 @@ set_gripper(state)
 Rules:
 1. Call set_ee_target() exactly once.
 2. Call set_gripper() exactly once.
-3. For grasp: set_gripper("closed") with no conditions.
-4. For reach: set_gripper("open") with no conditions.
+3. For grasp: set_gripper("closed") unconditionally.
+4. For reach: set_gripper("open") unconditionally.
 5. No other code. No explanation. No markdown.
 """
 
@@ -88,45 +85,42 @@ current EE position: {ee_current}
 === PHASE ===
 Phase {phase_id}: Arm {arm} performs '{action}' targeting '{target}'.
 
-=== TARGET GUIDE ===
-- "box"          : EE moves to the box. Use z_offset=0.0 for both reach and grasp.
-                   The IK orientation constraint ensures the gripper is horizontal
-                   and fingers straddle the box sides.
-- "handoff_zone" : EE moves to the handoff zone. Use z_offset=0.05.
-- "goal_zone"    : EE moves to the goal zone. Use z_offset=0.05.
-                   Only valid for Arm B place phases.
-                   For Arm A place phases always use "handoff_zone".
+=== TARGET MAPPING ===
+The target field for this phase is '{target}'.
+set_ee_target() must use the matching API target:
+  target='box'          -> set_ee_target("box")
+  target='center'       -> set_ee_target("handoff_zone", z_offset=0.05)
+  target='handoff_zone' -> set_ee_target("handoff_zone", z_offset=0.05)
+  target='A' or 'B'     -> set_ee_target("goal_zone", z_offset=0.05)
+Do not override this mapping.
 
 Write ONLY API calls for this phase. No explanation. No markdown.
 """
 
 
-# -------------------------
-# PHASE CONFIG
-# -------------------------
-
 class PhaseConfig:
-    """Holds the configuration produced by executing the Gemini reward API calls."""
+    """Holds the reward/is_done/gripper configuration for one phase."""
+
     def __init__(self):
         self.target              = "box"
         self.z_offset            = 0.0
-        self.done_threshold      = 0.10
-        self.alignment_weight    = 0.8
-        self.alignment_threshold = 0.8
+        self.done_threshold      = 0.06
+        self.alignment_weight    = 0.3
+        self.alignment_threshold = -1.0
         self.gripper_state       = "open"
 
-
-# -------------------------
-# FUNCTION BUILDER
-# -------------------------
 
 def _build_functions(config, phase, scene_state):
     """
     Builds reward(), is_done(), gripper_command() closures from a PhaseConfig.
-    All geometry and numpy math lives here — nothing in the LLM output.
+
+    All geometry and numpy math lives here. The box reach z offset from
+    scene_state is used unconditionally for box targets so IK and reward
+    targets always agree regardless of what z_offset Gemini passed.
     """
-    arm      = phase.arm
-    min_ee_z = scene_state["min_ee_z"]
+    arm        = phase.arm
+    min_ee_z   = scene_state["min_ee_z"]
+    box_z_off  = scene_state.get("box_reach_z_offset", 0.02)
 
     target_key   = config.target
     z_offset     = config.z_offset
@@ -138,9 +132,10 @@ def _build_functions(config, phase, scene_state):
     site_fn = (lambda sa, sb: sa) if arm == "A" else (lambda sa, sb: sb)
 
     def _resolve_target(data, object_body_id, hp, gp):
+        """Returns the world-frame target position for this phase."""
         if target_key == "box":
             t    = data.xpos[object_body_id].copy()
-            t[2] = max(t[2] + z_offset, min_ee_z)
+            t[2] = t[2] + box_z_off
             return t
         if target_key == "handoff_zone":
             t    = hp.copy()
@@ -155,6 +150,7 @@ def _build_functions(config, phase, scene_state):
         return t
 
     def _alignment(data, site_id, target_pos):
+        """Returns dot product of EE approach axis and direction to target."""
         ee_pos    = data.site_xpos[site_id]
         to_target = target_pos - ee_pos
         norm      = np.linalg.norm(to_target)
@@ -198,10 +194,6 @@ def _build_functions(config, phase, scene_state):
 
     return reward, is_done, gripper_command
 
-
-# -------------------------
-# GEMINI CALL
-# -------------------------
 
 def _call_gemini(phase, scene_state: dict):
     """
@@ -249,7 +241,7 @@ def _call_gemini(phase, scene_state: dict):
 
 def _parse_api_calls(text, phase):
     """
-    Executes Gemini-generated API calls into a PhaseConfig object.
+    Executes Gemini-generated API call text against a PhaseConfig object.
     Returns the populated PhaseConfig, or None if execution fails.
     """
     config = PhaseConfig()
@@ -299,31 +291,28 @@ def _parse_api_calls(text, phase):
     return config
 
 
-# -------------------------
-# FALLBACK
-# -------------------------
-
 def _fallback_config(phase):
     """Returns a sensible PhaseConfig based on action type when Gemini is unavailable."""
     config = PhaseConfig()
 
     if phase.action == "reach":
         config.target              = "box"
-        config.z_offset            = 0.0
+        config.done_threshold      = 0.06
         config.gripper_state       = "open"
-        config.alignment_weight    = 0.5
-        config.alignment_threshold = 0.5
+        config.alignment_weight    = 0.3
+        config.alignment_threshold = -1.0
 
     elif phase.action == "grasp":
         config.target              = "box"
-        config.z_offset            = 0.0
+        config.done_threshold      = 0.06
         config.gripper_state       = "closed"
-        config.alignment_weight    = 0.5
-        config.alignment_threshold = 0.4
+        config.alignment_weight    = 0.0
+        config.alignment_threshold = -1.0
 
     elif phase.action == "place":
         config.target              = "handoff_zone" if phase.arm == "A" else "goal_zone"
         config.z_offset            = 0.05
+        config.done_threshold      = 0.08
         config.gripper_state       = "open_when_done"
         config.alignment_weight    = 0.0
         config.alignment_threshold = -1.0
@@ -331,6 +320,7 @@ def _fallback_config(phase):
     elif phase.action == "clear_obstacle":
         config.target              = "box"
         config.z_offset            = 0.10
+        config.done_threshold      = 0.08
         config.gripper_state       = "open"
         config.alignment_weight    = 0.0
         config.alignment_threshold = -1.0
@@ -338,11 +328,9 @@ def _fallback_config(phase):
     return config
 
 
-# -------------------------
-# PHASE FUNCTIONS
-# -------------------------
-
 class PhaseFunctions:
+    """Wraps the three generated functions for one phase with a consistent call interface."""
+
     def __init__(self, phase, reward_fn, is_done_fn, gripper_fn, source):
         self.phase      = phase
         self.source     = source
@@ -367,6 +355,7 @@ class PhaseFunctions:
 
 
 def build_phase_functions(phase, scene_state: dict):
+    """Builds PhaseFunctions for the given phase, using Gemini or fallback."""
     config = _call_gemini(phase, scene_state)
     if config is not None:
         fns = _build_functions(config, phase, scene_state)
@@ -378,10 +367,6 @@ def build_phase_functions(phase, scene_state: dict):
     fns    = _build_functions(config, phase, scene_state)
     return PhaseFunctions(phase, *fns, source="fallback")
 
-
-# -------------------------
-# DECOMPOSITION
-# -------------------------
 
 def decompose_phase(phase, reason="timeout"):
     """
@@ -450,14 +435,15 @@ if __name__ == "__main__":
 
     task = parse_task("move box from table A to table B")
     dummy_scene = {
-        "box_pos":     np.array([-0.96, 0.0, 0.035]),
-        "handoff_pos": np.array([0.0,   0.0, 0.035]),
-        "goal_pos":    np.array([0.96,  0.0, 0.035]),
-        "ee_a":        np.array([-0.14, -0.005, 0.234]),
-        "ee_b":        np.array([ 0.14, -0.033, 0.234]),
-        "ee_a_xmat":   np.eye(3),
-        "ee_b_xmat":   np.eye(3),
-        "min_ee_z":    0.05,
+        "box_pos":            np.array([-0.96, 0.0, 0.035]),
+        "handoff_pos":        np.array([0.0,   0.0, 0.035]),
+        "goal_pos":           np.array([0.96,  0.0, 0.035]),
+        "ee_a":               np.array([-0.14, -0.005, 0.234]),
+        "ee_b":               np.array([ 0.14, -0.033, 0.234]),
+        "ee_a_xmat":          np.eye(3),
+        "ee_b_xmat":          np.eye(3),
+        "min_ee_z":           0.05,
+        "box_reach_z_offset": 0.02,
     }
     for phase in task.phases:
         pf = build_phase_functions(phase, dummy_scene)
