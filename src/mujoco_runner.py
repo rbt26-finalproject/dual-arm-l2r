@@ -32,7 +32,7 @@ from mujoco_playground._src.manipulation.aloha import base as aloha_base
 
 from types_ import Phase, TaskDecomposition
 from motion_descriptor import parse_task
-from reward_function import build_phase_functions, decompose_phase, GRIP_OPEN, GRIP_CLOSED
+from reward_function import build_phase_functions,PhaseFunctions, decompose_phase, GRIP_OPEN, GRIP_CLOSED
 from handoff_resolver import compute_handoff_zone
 
 
@@ -40,8 +40,8 @@ MENAGERIE_PATH = Path(__file__).parent.parent / "aloha_menagerie"
 SCENE_XML      = Path(__file__).parent.parent / "assets" / "scene_dual_arm.xml"
 OUTPUTS_DIR    = Path(__file__).parent.parent / "outputs"
 
-JOINT_SLICE_A = slice(0, 6)
-JOINT_SLICE_B = slice(8, 14)
+JOINT_SLICE_A = slice(0, 7)
+JOINT_SLICE_B = slice(7, 14)
 
 GRIP_IDX_A = 6
 GRIP_IDX_B = 13
@@ -56,7 +56,7 @@ MIN_EE_Z = 0.05
 
 MAX_STEPS_PER_PHASE    = 1500
 MAX_DECOMPOSE_ATTEMPTS = 1
-MAX_CTRL_DELTA         = 0.005
+MAX_CTRL_DELTA         = 0.008
 
 
 # -------------------------
@@ -180,17 +180,31 @@ def build_scene_state(data, scene, handoff_pos, goal_pos):
 # IK SOLVER
 # -------------------------
 
+# minimum z any part of the arm should reach during motion
+TRAJ_MIN_Z        = 0.05
+# clearance height the EE must pass through before descending to target
+TRAJ_WAYPOINT_Z   = 0.25
+# robot base radius — EE must stay outside this in XY when near base height
+ROBOT_BASE_RADIUS = 0.12
+
+
+def _base_pos(arm):
+    """Returns the XY base position for the given arm."""
+    return np.array([-0.469, -0.019]) if arm == "A" else np.array([0.469, -0.019])
+
+
 def solve_ik(model, data, joint_slice, site_id, ee_target,
-             enforce_orientation=False, q_seed=None):
+             enforce_orientation=False, q_seed=None, arm=None):
     """
-    Solves IK for one arm using L-BFGS-B. Returns (joint_config, position_error).
+    Solves IK using SLSQP with explicit constraints.
 
-    When enforce_orientation is True, adds penalty terms to keep the approach
-    axis horizontal and the Z axis pointing up — used for reach phases so the
-    gripper arrives parallel to the table. Restores sim state after solving.
+    Constraints enforced:
+      - EE z must stay above TRAJ_MIN_Z (no going through table)
+      - EE must stay outside ROBOT_BASE_RADIUS in XY when near base height
+      - approach axis horizontal and Z axis up when enforce_orientation is True
 
-    q_seed overrides the starting joint config for the optimizer, which affects
-    which local minimum is found. Use pre-solved seeds for cross-body reaches.
+    Returns (joint_config, position_error).
+    Restores sim state after solving.
     """
     lo       = model.jnt_range[joint_slice, 0]
     hi       = model.jnt_range[joint_slice, 1]
@@ -198,31 +212,33 @@ def solve_ik(model, data, joint_slice, site_id, ee_target,
     q_backup = data.qpos.copy()
     v_backup = data.qvel.copy()
 
-    def cost(q):
+    def get_ee(q):
         data.qpos[joint_slice] = q
         mujoco.mj_forward(model, data)
+        return data.site_xpos[site_id].copy()
 
-        pos_err = np.linalg.norm(data.site_xpos[site_id] - ee_target)
+    def objective(q):
+        ee = get_ee(q)
+        pos_err = np.linalg.norm(ee - ee_target)
 
         if not enforce_orientation:
             return float(pos_err)
 
-        R = data.site_xmat[site_id].reshape(3, 3)
-
+        R                 = data.site_xmat[site_id].reshape(3, 3)
         approach_tilt_err = abs(float(R[:, 0][2]))
         up_err            = 1.0 - float(np.dot(R[:, 2], np.array([0.0, 0.0, 1.0])))
 
-        to_target      = ee_target - data.site_xpos[site_id]
+        to_target      = ee_target - ee
         to_target_h    = to_target.copy()
         to_target_h[2] = 0.0
         norm           = np.linalg.norm(to_target_h)
         if norm > 1e-6:
-            to_target_h     /= norm
-            approach_h       = R[:, 0].copy()
-            approach_h[2]    = 0.0
-            approach_h_norm  = np.linalg.norm(approach_h)
-            if approach_h_norm > 1e-6:
-                approach_h /= approach_h_norm
+            to_target_h /= norm
+            approach_h      = R[:, 0].copy()
+            approach_h[2]   = 0.0
+            ah_norm         = np.linalg.norm(approach_h)
+            if ah_norm > 1e-6:
+                approach_h /= ah_norm
             approach_dir_err = 1.0 - float(np.dot(approach_h, to_target_h))
         else:
             approach_dir_err = 0.0
@@ -232,11 +248,33 @@ def solve_ik(model, data, joint_slice, site_id, ee_target,
                      + 0.5 * approach_tilt_err
                      + 0.3 * approach_dir_err)
 
+    constraints = []
+
+    # EE must stay above table surface
+    constraints.append({
+        "type": "ineq",
+        "fun": lambda q: float(get_ee(q)[2] - TRAJ_MIN_Z),
+    })
+
+    # EE must stay outside robot base footprint in XY when below arm height
+    if arm is not None:
+        base_xy = _base_pos(arm)
+        constraints.append({
+            "type": "ineq",
+            "fun": lambda q: float(
+                np.linalg.norm(get_ee(q)[:2] - base_xy) - ROBOT_BASE_RADIUS
+                if get_ee(q)[2] < 0.20 else 1.0
+            ),
+        })
+
+    bounds = [(float(lo[i]), float(hi[i])) for i in range(len(lo))]
+
     res = minimize(
-        cost, q0,
-        method="L-BFGS-B",
-        bounds=list(zip(lo, hi)),
-        options={"maxiter": 800, "ftol": 1e-10},
+        objective, q0,
+        method="SLSQP",
+        bounds=bounds,
+        constraints=constraints,
+        options={"maxiter": 500, "ftol": 1e-8},
     )
 
     data.qpos[joint_slice] = res.x
@@ -248,6 +286,45 @@ def solve_ik(model, data, joint_slice, site_id, ee_target,
     mujoco.mj_forward(model, data)
 
     return np.clip(res.x, lo, hi), actual_cost
+
+
+def solve_ik_with_waypoints(model, data, joint_slice, site_id, ee_target,
+                             enforce_orientation=False, q_seed=None, arm=None):
+    """
+    Solves IK in two stages using waypoints to prevent self-collision trajectories.
+
+    Stage 1: move EE to a clearance waypoint directly above the target at
+             TRAJ_WAYPOINT_Z height. This forces the arm to lift over obstacles
+             and clear the robot base before committing to the final position.
+    Stage 2: solve IK for the actual target, seeded from the waypoint solution.
+
+    Returns (joint_config, position_error) for the final target.
+    """
+    # stage 1: lift waypoint above target
+    waypoint    = ee_target.copy()
+    waypoint[2] = max(ee_target[2], TRAJ_WAYPOINT_Z)
+
+    # only solve waypoint if target is below clearance height
+    if ee_target[2] < TRAJ_WAYPOINT_Z - 0.05:
+        q_waypoint, wp_cost = solve_ik(
+            model, data, joint_slice, site_id, waypoint,
+            enforce_orientation=False,
+            q_seed=q_seed,
+            arm=arm,
+        )
+        print(f"[ik] Waypoint solved: z={waypoint[2]:.3f} cost={wp_cost:.4f}")
+    else:
+        q_waypoint = q_seed
+
+    # stage 2: solve for actual target seeded from waypoint
+    q_final, final_cost = solve_ik(
+        model, data, joint_slice, site_id, ee_target,
+        enforce_orientation=enforce_orientation,
+        q_seed=q_waypoint,
+        arm=arm,
+    )
+
+    return q_final, final_cost
 
 
 # -------------------------
@@ -366,11 +443,13 @@ def run(task_str):
 
     center_seed_a, cost_a = solve_ik(
         model, data, JOINT_SLICE_A, site_a,
-        center_target, enforce_orientation=False, q_seed=home_qpos_a,
+        center_target, enforce_orientation=False,
+        q_seed=home_qpos_a, arm="A",
     )
     center_seed_b, cost_b = solve_ik(
         model, data, JOINT_SLICE_B, site_b,
-        center_target, enforce_orientation=False, q_seed=home_qpos_b,
+        center_target, enforce_orientation=False,
+        q_seed=home_qpos_b, arm="B",
     )
     print(f"[init] Center seed IK — A: {cost_a:.4f}  B: {cost_b:.4f}")
 
@@ -426,7 +505,6 @@ def run(task_str):
                     ik_cost        = 0.0
                     ee_target      = left_gripper_init_pos.copy() if arm  == "A" else right_gripper_init_pos.copy()
 
-                    from reward_function import PhaseFunctions, GRIP_OPEN
                     _home_q = home_q.copy()
                     _js     = joint_slice
 
@@ -452,7 +530,7 @@ def run(task_str):
                 if phase.action == "grasp":
                     # grasp only moves fingers — hold arm at current ctrl position
                     q_phase_target = (
-                        data.ctrl[0:6].copy() if arm == "A" else data.ctrl[8:14].copy()
+                        data.ctrl[0:7].copy() if arm == "A" else data.ctrl[7:14].copy()
                     )
                     ik_cost   = 0.0
                     ee_target = data.site_xpos[site_id].copy()
@@ -474,17 +552,18 @@ def run(task_str):
                     else:
                         q_seed = home_qpos_a if arm == "A" else home_qpos_b
 
-                    q_phase_target, ik_cost = solve_ik(
+                    q_phase_target, ik_cost = solve_ik_with_waypoints(
                         model, data, joint_slice, site_id, ee_target,
                         enforce_orientation=(phase.action == "reach"),
                         q_seed=q_seed,
+                        arm=arm,
                     )
-                    # if orientation-constrained IK fails badly, retry without it
                     if ik_cost > 0.1 and phase.action == "reach":
-                        q_no_orient, cost_no_orient = solve_ik(
+                        q_no_orient, cost_no_orient = solve_ik_with_waypoints(
                             model, data, joint_slice, site_id, ee_target,
                             enforce_orientation=False,
                             q_seed=q_seed,
+                            arm=arm,
                         )
                         if cost_no_orient < ik_cost:
                             print(
@@ -501,14 +580,14 @@ def run(task_str):
                     f"dist={np.linalg.norm(data.site_xpos[site_id] - ee_target):.3f}"
                 )
 
-            q_ctrl_now = data.ctrl[0:6].copy() if arm == "A" else data.ctrl[8:14].copy()
+            q_ctrl_now = data.ctrl[0:7].copy() if arm == "A" else data.ctrl[7:14].copy()
             delta      = q_phase_target - q_ctrl_now
             q_cmd      = q_ctrl_now + np.clip(delta, -MAX_CTRL_DELTA, MAX_CTRL_DELTA)
 
             if arm == "A":
-                data.ctrl[0:6]  = q_cmd
+                data.ctrl[0:7]  = q_cmd
             else:
-                data.ctrl[8:14] = q_cmd
+                data.ctrl[7:14] = q_cmd
 
             grip_val = current_pf.gripper(
                 data, site_a, site_b,
