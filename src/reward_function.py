@@ -41,14 +41,14 @@ set_ee_target(target, z_offset=0.0)
   Sets the EE position target for reward and is_done.
   target must be one of: "box", "handoff_zone", "goal_zone"
   z_offset is ignored for "box" targets — the system uses a fixed scene offset.
-  For handoff/goal: use z_offset=0.05 to clear the table surface.
+  For handoff/goal: use z_offset=0.03 to clear the table surface.
   For Arm A place phases: always use "handoff_zone", never "goal_zone".
   For Arm B place phases: use "goal_zone".
 
 set_done_threshold(distance)
-  Sets the distance threshold in meters for is_done(). Default is 0.06.
-  Use 0.06 for reach and grasp phases.
-  Use 0.08 for place phases.
+  Sets the distance threshold in meters for is_done(). Default is 0.075.
+  Use 0.075 for reach and grasp phases.
+  Use 0.06 for place phases.
 
 set_alignment_weight(weight)
   Weights alignment in the reward signal to guide approach direction.
@@ -60,7 +60,7 @@ set_alignment_threshold(min_alignment)
 
 set_gripper(state)
   state must be one of: "open", "closed", "open_when_done"
-  "open"           -> always open  (reach, clear_obstacle)
+  "open"           -> always open  (reach)
   "closed"         -> always closed unconditionally (grasp)
   "open_when_done" -> closed while moving, opens when is_done() (place)
 
@@ -93,6 +93,12 @@ set_ee_target() must use the matching API target:
   target='handoff_zone' -> set_ee_target("handoff_zone", z_offset=0.05)
   target='A' or 'B'     -> set_ee_target("goal_zone", z_offset=0.05)
 Do not override this mapping.
+
+=== THRESHOLDS ===
+For reach phases with target='box': use set_done_threshold(0.075)
+For reach phases with target='handoff_zone' or 'center': use set_done_threshold(0.06)
+For grasp phases: use set_done_threshold(0.09)
+For place phases: use set_done_threshold(0.06)
 
 Write ONLY API calls for this phase. No explanation. No markdown.
 """
@@ -317,14 +323,6 @@ def _fallback_config(phase):
         config.alignment_weight    = 0.0
         config.alignment_threshold = -1.0
 
-    elif phase.action == "clear_obstacle":
-        config.target              = "box"
-        config.z_offset            = 0.10
-        config.done_threshold      = 0.08
-        config.gripper_state       = "open"
-        config.alignment_weight    = 0.0
-        config.alignment_threshold = -1.0
-
     return config
 
 
@@ -389,11 +387,11 @@ failed due to: {reason}.
 
 Decompose into 2-3 smaller sequential sub-phases achieving the same goal.
 Use ONLY these valid target values: box, handoff_zone, center, A, B.
-Use ONLY these valid action values: reach, grasp, place, clear_obstacle.
+Use ONLY these valid action values: reach, grasp, place
 
 Output ONLY a JSON array:
 [
-  {{"arm": "A or B", "action": "reach|grasp|place|clear_obstacle", "target": "box|handoff_zone|center|A|B"}},
+  {{"arm": "A or B", "action": "reach|grasp|place", "target": "box|handoff_zone|center|A|B"}},
   ...
 ]
 No explanation, no markdown fences.

@@ -40,19 +40,19 @@ MENAGERIE_PATH = Path(__file__).parent.parent / "aloha_menagerie"
 SCENE_XML      = Path(__file__).parent.parent / "assets" / "scene_dual_arm.xml"
 OUTPUTS_DIR    = Path(__file__).parent.parent / "outputs"
 
-JOINT_SLICE_A = slice(0, 7)
-JOINT_SLICE_B = slice(7, 14)
+JOINT_SLICE_A = slice(0, 6)
+JOINT_SLICE_B = slice(8, 14)
 
 GRIP_IDX_A = 6
 GRIP_IDX_B = 13
 
 # small z offset applied to box reach/grasp IK targets so the orientation
 # constraint can be satisfied without the EE colliding with the table surface
-BOX_REACH_Z_OFFSET = 0.02
+BOX_REACH_Z_OFFSET = 0.00
 
-WELD_DISTANCE_THRESHOLD = 0.1
+WELD_DISTANCE_THRESHOLD = 0.01
 
-MIN_EE_Z = 0.05
+MIN_EE_Z = 0.02
 
 MAX_STEPS_PER_PHASE    = 1500
 MAX_DECOMPOSE_ATTEMPTS = 1
@@ -163,7 +163,7 @@ def build_scene_state(data, scene, handoff_pos, goal_pos):
     Includes live positions, EE rotation matrices, and the box z offset used
     by both IK and reward targets so they stay consistent.
     """
-    return {
+    state = {
         "box_pos":           get_box_pos(data, scene),
         "handoff_pos":       handoff_pos,
         "goal_pos":          goal_pos,
@@ -174,6 +174,8 @@ def build_scene_state(data, scene, handoff_pos, goal_pos):
         "min_ee_z":          MIN_EE_Z,
         "box_reach_z_offset": BOX_REACH_Z_OFFSET,
     }
+
+    return state
 
 
 # -------------------------
@@ -528,9 +530,9 @@ def run(task_str):
                     )
 
                 if phase.action == "grasp":
-                    # grasp only moves fingers — hold arm at current ctrl position
+                    # grasp only moves fingers. hold arm at current ctrl position
                     q_phase_target = (
-                        data.ctrl[0:7].copy() if arm == "A" else data.ctrl[7:14].copy()
+                        data.ctrl[0:6].copy() if arm == "A" else data.ctrl[7:13].copy()
                     )
                     ik_cost   = 0.0
                     ee_target = data.site_xpos[site_id].copy()
@@ -580,14 +582,14 @@ def run(task_str):
                     f"dist={np.linalg.norm(data.site_xpos[site_id] - ee_target):.3f}"
                 )
 
-            q_ctrl_now = data.ctrl[0:7].copy() if arm == "A" else data.ctrl[7:14].copy()
+            q_ctrl_now = data.ctrl[0:6].copy() if arm == "A" else data.ctrl[7:13].copy()
             delta      = q_phase_target - q_ctrl_now
             q_cmd      = q_ctrl_now + np.clip(delta, -MAX_CTRL_DELTA, MAX_CTRL_DELTA)
 
             if arm == "A":
-                data.ctrl[0:7]  = q_cmd
+                data.ctrl[0:6]  = q_cmd
             else:
-                data.ctrl[7:14] = q_cmd
+                data.ctrl[7:13] = q_cmd
 
             grip_val = current_pf.gripper(
                 data, site_a, site_b,
@@ -633,17 +635,17 @@ def run(task_str):
                 # after arm A places at center, inject a retreat so it clears
                 # the handoff zone before arm B tries to reach the box
                 if (phase.action == "place"
-                        and arm == "A"
+                        and (arm == "A" or arm == "B") 
                         and phase.target in ("center", "handoff_zone")):
                     retreat = Phase(
-                        phase_id=phase.phase_id * 10 + 9,
-                        arm="A",
+                        phase_id=phase_idx*100+9,  # above 100, won't decompose
+                        arm=arm,
                         action="retreat",
-                        target="A",
+                        target="home",
                         depends_on=None,
                     )
                     phase_queue.insert(phase_idx + 1, retreat)
-                    print(f"[runner] Inserted arm A retreat phase after place")
+                    print(f"[runner] Inserted arm retreat phase after place")
 
                 phase_idx      += 1
                 steps_in_phase  = 0

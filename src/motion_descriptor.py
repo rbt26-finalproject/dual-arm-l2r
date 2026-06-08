@@ -27,7 +27,7 @@ from google.genai import types
 class Phase:
     phase_id: int
     arm: str           # "A" (left) or "B" (right)
-    action: str        # "reach", "grasp", "place", "clear_obstacle"
+    action: str        # "reach", "grasp", "place"
     target: str        # object name or zone name
     depends_on: Optional[int] = None
 
@@ -80,7 +80,6 @@ Object to manipulate: {CHOICE: box}
 Start location: {CHOICE: table_A, table_B, center}
 Goal location: {CHOICE: table_A, table_B, center}
 Handoff required: {CHOICE: yes, no}
-[optional] Obstacle to clear: {CHOICE: obstacle}
 [optional] Arm A clears obstacle before reaching object.
 Arm {CHOICE: A, B} reaches the object.
 Arm {CHOICE: A, B} grasps the object.
@@ -142,7 +141,7 @@ Given a structured motion plan, output ONLY a JSON object:
     {
       "phase_id": 1,
       "arm": "A or B",
-      "action": "clear_obstacle or reach or grasp or place",
+      "action": "reach or grasp or place",
       "target": "box or obstacle or handoff_zone or A or B or center or above_box",
       "depends_on": null or integer
     }
@@ -280,11 +279,6 @@ def _rule_based_parse(task_str):
     handoff  = start_arm != goal_arm
     phases   = []
     phase_id = 1
-
-    if obstacle_name:
-        phases.append(Phase(phase_id=phase_id, arm=start_arm,
-                            action="clear_obstacle", target=obstacle_name))
-        phase_id += 1
 
     phases.append(Phase(phase_id=phase_id, arm=start_arm, action="reach",
                         target=object_name,
