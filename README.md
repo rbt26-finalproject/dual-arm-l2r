@@ -6,6 +6,9 @@ A robotics final project for Fasilkom UI Robotics 2026. Uses a single LLM agent 
 
 ## Overview
 
+### Demo Playlist
+- [Youtube](https://youtube.com/playlist?list=PLiKAAECBqog_ydQfI9-oqjqyteWVCXNwH&si=vJx2RVN_DkclfjuS)
+
 Given a task like `"move the box from table A to table B"`, the system:
 1. Parses the instruction into a structured motion plan
 2. Decomposes it into ordered arm phases (reach → grasp → place)
